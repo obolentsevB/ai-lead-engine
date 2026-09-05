@@ -1,0 +1,155 @@
+{
+  "name": "Approval Page",
+  "nodes": [
+    {
+      "parameters": {
+        "path": "lead-confirm",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        0,
+        0
+      ],
+      "id": "ed8cf5a7-90dc-437e-ab8c-d5706843e2fb",
+      "name": "Webhook",
+      "webhookId": "ebda4c31-d619-4ed4-b38b-02d0918ea187"
+    },
+    {
+      "parameters": {
+        "jsCode": "const crypto = require('crypto');\nconst SECRET = $env.APPROVAL_SECRET;\nif (!SECRET) throw new Error('APPROVAL_SECRET is not configured');\n\nreturn $input.all().map(item => {\n  const q = item.json.query ?? {};\n  const sid    = String(q.sid ?? '');\n  const exp    = Number(q.exp ?? 0);\n  const sig    = String(q.sig ?? '');\n  const action = String(q.action ?? '');\n\n  const fail = (reason) => ({ json: { ok: false, reason, sid, action } });\n\n  if (!sid || !exp || !sig)                 return fail('missing parameters');\n  if (!['send', 'hold'].includes(action))   return fail('unknown action');\n\n  const expected = crypto\n    .createHmac('sha256', SECRET)\n    .update(`${sid}.${exp}`)\n    .digest('hex');\n\n  let valid = false;\n  try {\n    valid = crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(sig));\n  } catch { valid = false; }\n\n  if (!valid)              return fail('invalid signature');\n  if (Date.now() > exp)    return fail('link expired');\n\n  return { json: { ok: true, sid, action, exp, sig } };\n});"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        160,
+        0
+      ],
+      "id": "76057f49-0da2-4752-81bb-f9044f999e18",
+      "name": "Verify Token"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT full_name, email, personalized_opener, icp_score, action_taken\nFROM app.leads WHERE submission_id = $1;",
+        "options": {
+          "queryReplacement": "={{ $json.sid }}"
+        }
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.7,
+      "position": [
+        320,
+        0
+      ],
+      "id": "53ec20ac-64c6-45f5-923e-9333fa32f025",
+      "name": "Fetch Preview",
+      "alwaysOutputData": true,
+      "credentials": {
+        "postgres": {
+          "id": "QBrIbxzDDffD8Wy1",
+          "name": "postgres - app"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const v = $('Verify Token').first().json;\nconst rows = $input.all().filter(i => i.json.email);\nconst lead = rows[0]?.json ?? {};\nconst BASE = $env.N8N_PUBLIC_URL;\n\nconst esc = s => String(s ?? '')\n  .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')\n  .replace(/\"/g,'&quot;');\n\nlet inner;\n\nif (!v.ok) {\n  inner = `<h1 style=\"color:#b91c1c;margin:0 0 12px;font-size:20px\">Link not valid</h1>\n    <p style=\"margin:0;color:#374151\">${v.reason === 'link expired'\n      ? 'This approval link has expired. Open the lead in Slack for a fresh one.'\n      : 'This link could not be verified.'}</p>`;\n} else if (!lead.email) {\n  inner = `<h1 style=\"color:#b91c1c;margin:0 0 12px;font-size:20px\">Lead not found</h1>\n    <p style=\"margin:0;color:#374151\">No lead matches this link.</p>`;\n} else if (lead.action_taken === 'email_sent') {\n  inner = `<h1 style=\"color:#b45309;margin:0 0 12px;font-size:20px\">Already sent</h1>\n    <p style=\"margin:0;color:#374151\">A reply was already sent to ${esc(lead.email)}.</p>`;\n} else {\n  const hidden = `\n    <input type=\"hidden\" name=\"sid\" value=\"${esc(v.sid)}\">\n    <input type=\"hidden\" name=\"exp\" value=\"${esc(v.exp)}\">\n    <input type=\"hidden\" name=\"sig\" value=\"${esc(v.sig)}\">`;\n\n  inner = `\n    <h1 style=\"margin:0 0 4px;font-size:20px;color:#111827\">Send this reply?</h1>\n    <p style=\"margin:0 0 20px;color:#6b7280;font-size:14px\">\n      To ${esc(lead.full_name)} &lt;${esc(lead.email)}&gt; · score ${esc(lead.icp_score)}/10\n    </p>\n    <div style=\"background:#f6f7f9;border-radius:8px;padding:16px;margin-bottom:24px;\n                color:#374151;line-height:1.55;font-size:14px;white-space:pre-wrap\">${esc(lead.personalized_opener)}</div>\n    <div style=\"display:flex;gap:10px\">\n      <form method=\"POST\" action=\"${BASE}/webhook/lead-approve\" style=\"margin:0\">\n        ${hidden}<input type=\"hidden\" name=\"action\" value=\"send\">\n        <button type=\"submit\" style=\"background:#15803d;color:#fff;border:0;border-radius:7px;\n          padding:11px 20px;font-size:14px;font-weight:600;cursor:pointer\">Send reply</button>\n      </form>\n      <form method=\"POST\" action=\"${BASE}/webhook/lead-approve\" style=\"margin:0\">\n        ${hidden}<input type=\"hidden\" name=\"action\" value=\"hold\">\n        <button type=\"submit\" style=\"background:#fff;color:#374151;border:1px solid #d1d5db;\n          border-radius:7px;padding:11px 20px;font-size:14px;cursor:pointer\">Hold</button>\n      </form>\n    </div>`;\n}\n\nconst html = `<!doctype html>\n<html><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\n<meta name=\"robots\" content=\"noindex,nofollow\"><title>Approve reply</title></head>\n<body style=\"font-family:system-ui,-apple-system,sans-serif;background:#f6f7f9;margin:0;padding:48px 16px\">\n  <div style=\"max-width:520px;margin:0 auto;background:#fff;border-radius:12px;padding:32px;\n              box-shadow:0 1px 3px rgba(0,0,0,.08)\">${inner}</div>\n</body></html>`;\n\nreturn [{ json: { html } }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        480,
+        0
+      ],
+      "id": "25477000-88e8-4ab1-a96d-73ea64636fb3",
+      "name": "Render Page"
+    },
+    {
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "={{ $json.html }}",
+        "options": {
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Type",
+                "value": "text/html; charset=utf-8"
+              }
+            ]
+          }
+        }
+      },
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        640,
+        0
+      ],
+      "id": "9d569307-14a7-4ecc-93f4-dddeeab42fe7",
+      "name": "Respond"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Verify Token",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Verify Token": {
+      "main": [
+        [
+          {
+            "node": "Fetch Preview",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Preview": {
+      "main": [
+        [
+          {
+            "node": "Render Page",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Render Page": {
+      "main": [
+        [
+          {
+            "node": "Respond",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "cdb629bc-df7e-498b-9afd-766834721379",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "7ad75a27b72f2f6ca3ae7518d02448ce296c449938337d2212d11b0911c03f35"
+  },
+  "nodeGroups": [],
+  "id": "2lAW1uJuKPURTAbZ",
+  "tags": []
+}

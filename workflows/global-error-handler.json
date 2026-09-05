@@ -1,0 +1,133 @@
+{
+  "name": "Global Error Handler",
+  "nodes": [
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ],
+      "id": "af3f2894-ee51-400c-ad4d-dc371c6cae8f",
+      "name": "Error Trigger"
+    },
+    {
+      "parameters": {
+        "jsCode": "const e = $json.execution || {};\nconst w = $json.workflow  || {};\n\nreturn [{\n  json: {\n    workflow_name: w.name || 'unknown',\n    node_name:     e.lastNodeExecuted || 'unknown',\n    error_message: String(e.error?.message || 'no message').slice(0, 500),\n    execution_id:  String(e.id || ''),\n    execution_url: e.url || '',\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        224,
+        0
+      ],
+      "id": "882295a4-211f-4305-b323-f0c494e12f2e",
+      "name": "Format Error"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO app.workflow_errors (workflow_name, node_name, error_message, execution_id)\nVALUES ($1, $2, $3, $4);",
+        "options": {
+          "queryReplacement": "={{ $('Format Error').item.json.workflow_name }},{{ $('Format Error').item.json.node_name }},{{ $('Format Error').item.json.error_message }},{{ $('Format Error').item.json.execution_id }}"
+        }
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.7,
+      "position": [
+        672,
+        0
+      ],
+      "id": "8ba369ce-5d41-4006-a948-a3d18f9f7616",
+      "name": "Log Error",
+      "credentials": {
+        "postgres": {
+          "id": "QBrIbxzDDffD8Wy1",
+          "name": "postgres - app"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "value": "#alerts",
+          "mode": "name"
+        },
+        "text": "=🚨 *{{ $json.workflow_name }}* failed\nNode: `{{ $json.node_name }}`\nError: {{ $json.error_message }}\n{{ $json.execution_url }}",
+        "otherOptions": {
+          "includeLinkToWorkflow": false
+        }
+      },
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.7,
+      "position": [
+        448,
+        0
+      ],
+      "id": "26010315-f142-44b5-80ad-fa820dd07c1b",
+      "name": "Alert Slack",
+      "webhookId": "fa0c53c6-9a14-4e5e-bdd2-57b16ebe637c",
+      "credentials": {
+        "slackApi": {
+          "id": "xCvIzcb1TRI8vpL3",
+          "name": "Slack - Lead Engine"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Error Trigger": {
+      "main": [
+        [
+          {
+            "node": "Format Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Error": {
+      "main": [
+        [
+          {
+            "node": "Alert Slack",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Alert Slack": {
+      "main": [
+        [
+          {
+            "node": "Log Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "timeSavedMode": "fixed",
+    "callerPolicy": "workflowsFromSameOwner",
+    "availableInMCP": false
+  },
+  "versionId": "061ad23a-3b46-40ad-9cd1-9f4e9901a404",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "7ad75a27b72f2f6ca3ae7518d02448ce296c449938337d2212d11b0911c03f35"
+  },
+  "nodeGroups": [],
+  "id": "kpn35IEkwnrbfCt5",
+  "tags": []
+}

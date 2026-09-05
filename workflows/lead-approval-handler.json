@@ -1,0 +1,475 @@
+{
+  "name": "Lead Approval Handler",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "lead-approve",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        0,
+        0
+      ],
+      "id": "d3366176-c403-4f97-b31d-dfa56707582c",
+      "name": "Webhook",
+      "webhookId": "ce72a390-f80b-4508-8d6b-a7b14bd979d1"
+    },
+    {
+      "parameters": {
+        "jsCode": "const crypto = require('crypto');\nconst SECRET = $env.APPROVAL_SECRET;\nif (!SECRET) throw new Error('APPROVAL_SECRET is not configured');\n\nreturn $input.all().map(item => {\n  const q = item.json.body ?? item.json.query ?? {};\n  const sid    = String(q.sid ?? '');\n  const exp    = Number(q.exp ?? 0);\n  const sig    = String(q.sig ?? '');\n  const action = String(q.action ?? '');\n\n  const fail = (reason) => ({ json: { ok: false, reason, sid, action } });\n\n  if (!sid || !exp || !sig)                 return fail('missing parameters');\n  if (!['send', 'hold'].includes(action))   return fail('unknown action');\n\n  const expected = crypto\n    .createHmac('sha256', SECRET)\n    .update(`${sid}.${exp}`)\n    .digest('hex');\n\n  let valid = false;\n  try {\n    valid = crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(sig));\n  } catch { valid = false; }\n\n  if (!valid)              return fail('invalid signature');\n  if (Date.now() > exp)    return fail('link expired');\n\n  return { json: { ok: true, sid, action, exp } };\n});"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        160,
+        0
+      ],
+      "id": "3da63b9a-3488-4c77-adf2-f34165ddc083",
+      "name": "Verify Token"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "da4106c6-2b49-4e73-846b-c73662a1ed77",
+              "leftValue": "={{ $json.ok }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        320,
+        0
+      ],
+      "id": "06705642-a379-4d67-a1c8-d37f81c3b375",
+      "name": "Token Valid?"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT submission_id, full_name, email, personalized_opener,\n       action_taken, icp_score\nFROM app.leads\nWHERE submission_id = $1;",
+        "options": {
+          "queryReplacement": "={{ $json.sid }}"
+        }
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.7,
+      "position": [
+        544,
+        -96
+      ],
+      "id": "d2f51727-70a4-44dc-a48d-f6a437840822",
+      "name": "Fetch Lead",
+      "alwaysOutputData": true,
+      "credentials": {
+        "postgres": {
+          "id": "QBrIbxzDDffD8Wy1",
+          "name": "postgres - app"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const v = $('Verify Token').first().json;\nconst rows = $input.all().filter(i => i.json.submission_id);\n\nif (rows.length === 0) {\n  return [{ json: { status: 'not_found', sid: v.sid } }];\n}\n\nconst lead = rows[0].json;\n\nif (lead.action_taken === 'email_sent') {\n  return [{ json: { status: 'already_sent', ...lead } }];\n}\nif (lead.action_taken === 'on_hold' && v.action === 'hold') {\n  return [{ json: { status: 'already_held', ...lead } }];\n}\n\nreturn [{ json: {\n  status: v.action === 'send' ? 'proceed_send' : 'proceed_hold',\n  action: v.action,\n  ...lead,\n}}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        704,
+        -96
+      ],
+      "id": "bf74d436-f2fc-42ad-85e4-1f980eee7a22",
+      "name": "Check State"
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.status }}",
+                    "rightValue": "proceed_send",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "id": "dc9b8161-09b7-4778-89c5-becb791b328f"
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "SEND"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "id": "9413aea5-cb96-43bb-9370-60b6abcfcbb0",
+                    "leftValue": "={{ $json.status }}",
+                    "rightValue": "proceed_hold",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals",
+                      "name": "filter.operator.equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "HOLD"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "id": "3a144534-3f82-4f4f-afd0-c6ec2567c302",
+                    "leftValue": "={{ $json.status }}",
+                    "rightValue": "already_sent",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals",
+                      "name": "filter.operator.equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "ALREADY"
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": "extra"
+        }
+      },
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.4,
+      "position": [
+        928,
+        -128
+      ],
+      "id": "9191bf9a-b309-4998-a7af-f3d21d99a8ae",
+      "name": "State Switch"
+    },
+    {
+      "parameters": {
+        "fromEmail": "hello@obolentsev.dev",
+        "toEmail": "={{ $json.email }}",
+        "subject": "Re: your enquiry",
+        "emailFormat": "text",
+        "text": "=Hi {{ $json.full_name }},\n\n{{ $json.personalized_opener }}\n\nIf it's useful, here's my calendar — grab any slot that works:\nhttps://cal.com/testaccount/30min\n\nBohdan",
+        "options": {
+          "appendAttribution": false
+        }
+      },
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [
+        1088,
+        -272
+      ],
+      "id": "05e114b2-d168-45c2-b30b-7c67d81c4d45",
+      "name": "Send Reply",
+      "webhookId": "4e121977-a511-4246-bada-40f2ae1520f2",
+      "credentials": {
+        "smtp": {
+          "id": "OtMgRAvO1yCuYhiK",
+          "name": "SMTP - sandbox"
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE app.leads\nSET action_taken = 'email_sent'\nWHERE submission_id = $1\nRETURNING submission_id, action_taken;",
+        "options": {
+          "queryReplacement": "={{ $('Check State').first().json.submission_id }}"
+        }
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.7,
+      "position": [
+        1312,
+        -288
+      ],
+      "id": "4233c6e5-0b95-461c-aeed-13e586c7d6dd",
+      "name": "Mark Sent",
+      "credentials": {
+        "postgres": {
+          "id": "QBrIbxzDDffD8Wy1",
+          "name": "postgres - app"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE app.leads\nSET action_taken = 'on_hold'\nWHERE submission_id = $1\nRETURNING submission_id, action_taken;",
+        "options": {
+          "queryReplacement": "={{ $json.submission_id }}"
+        }
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.7,
+      "position": [
+        1312,
+        -112
+      ],
+      "id": "3b7bf712-3da4-4743-aa2f-c7cf1ff24fc6",
+      "name": "Mark Held",
+      "credentials": {
+        "postgres": {
+          "id": "QBrIbxzDDffD8Wy1",
+          "name": "postgres - app"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const v = $('Verify Token').first().json;\n\nlet s = {};\ntry {\n  s = $('Check State').first().json ?? {};\n} catch {\n  s = {};\n}\n\nlet title, body, color;\n\nif (!v.ok) {\n  title = 'Link not valid';\n  body  = v.reason === 'link expired'\n    ? 'This approval link has expired. Open the lead in Slack for a fresh one.'\n    : 'This link could not be verified.';\n  color = '#b91c1c';\n} else if (s.status === 'already_sent') {\n  title = 'Already sent';\n  body  = 'A reply was already sent to this lead. No second email was sent.';\n  color = '#b45309';\n} else if (s.status === 'not_found') {\n  title = 'Lead not found';\n  body  = 'No lead matches this link.';\n  color = '#b91c1c';\n} else if (v.action === 'hold') {\n  title = 'Put on hold';\n  body  = 'No email was sent. The lead stays in the queue.';\n  color = '#0369a1';\n} else {\n  title = 'Sent';\n  body  = `Reply delivered to ${s.email ?? 'the lead'}.`;\n  color = '#15803d';\n}\n\nconst html = `<!doctype html>\n<html><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\n<title>${title}</title></head>\n<body style=\"font-family:system-ui,-apple-system,sans-serif;background:#f6f7f9;margin:0;padding:48px 16px\">\n  <div style=\"max-width:420px;margin:0 auto;background:#fff;border-radius:12px;padding:32px;box-shadow:0 1px 3px rgba(0,0,0,.08)\">\n    <h1 style=\"margin:0 0 12px;font-size:20px;color:${color}\">${title}</h1>\n    <p style=\"margin:0;color:#374151;line-height:1.5\">${body}</p>\n  </div>\n</body></html>`;\n\nreturn [{ json: { html } }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1472,
+        16
+      ],
+      "id": "7874f868-200d-4e3f-906d-6ec972eae72a",
+      "name": "Build Response"
+    },
+    {
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "={{ $json.html }}",
+        "options": {
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Type",
+                "value": "text/html; charset=utf-8"
+              }
+            ]
+          }
+        }
+      },
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        1632,
+        16
+      ],
+      "id": "1388718a-034c-4316-8e7a-fa4cc1203f3d",
+      "name": "Respond"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Verify Token",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Verify Token": {
+      "main": [
+        [
+          {
+            "node": "Token Valid?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Token Valid?": {
+      "main": [
+        [
+          {
+            "node": "Fetch Lead",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Lead": {
+      "main": [
+        [
+          {
+            "node": "Check State",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check State": {
+      "main": [
+        [
+          {
+            "node": "State Switch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "State Switch": {
+      "main": [
+        [
+          {
+            "node": "Send Reply",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Mark Held",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Response",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Reply": {
+      "main": [
+        [
+          {
+            "node": "Mark Sent",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mark Sent": {
+      "main": [
+        [
+          {
+            "node": "Build Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mark Held": {
+      "main": [
+        [
+          {
+            "node": "Build Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Response": {
+      "main": [
+        [
+          {
+            "node": "Respond",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "timeSavedMode": "fixed",
+    "errorWorkflow": "kpn35IEkwnrbfCt5",
+    "callerPolicy": "workflowsFromSameOwner",
+    "availableInMCP": false
+  },
+  "versionId": "23d0510f-9999-48ea-9ee3-d0b85b2dffad",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "7ad75a27b72f2f6ca3ae7518d02448ce296c449938337d2212d11b0911c03f35"
+  },
+  "nodeGroups": [],
+  "id": "lB63Rajs2NZgyb8y",
+  "tags": []
+}
