@@ -2,7 +2,7 @@
 
 **Self-initiated demo project.** Routes inbound form submissions in seconds instead of the 4–8 hours a human takes.
 
-[→ 90-second walkthrough](https://youtu.be/_li9CSW7LCM)
+[→ 90-second walkthrough](https://youtu.be/D_wv1Im2FNs)
 
 ---
 
